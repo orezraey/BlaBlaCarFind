@@ -28,6 +28,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     ConversationHandler,
+    Defaults,
     MessageHandler,
     filters,
 )
@@ -37,7 +38,10 @@ import storage
 from blablacar import BlaBlaCar, BlaBlaCarError, Place, RideDetails, Trip
 
 logging.basicConfig(
-    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s", level=logging.INFO
+    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    # O deslocamento no carimbo evita ler o log sem saber em que fuso ele esta.
+    datefmt="%Y-%m-%d %H:%M:%S%z",
+    level=logging.INFO,
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("blablacarfind")
@@ -507,7 +511,16 @@ def main() -> None:
         )
 
     storage.init()
-    app = Application.builder().token(token).build()
+
+    # O agendador (APScheduler) usa UTC por padrao e reportaria "next run" em UTC
+    # enquanto o log carimba em hora local -- dois fusos na mesma saida. Defaults
+    # alinha o agendador ao fuso do bot.
+    app = (
+        Application.builder()
+        .token(token)
+        .defaults(Defaults(tzinfo=clock.timezone()))
+        .build()
+    )
 
     conversation = ConversationHandler(
         entry_points=[CommandHandler("monitorar", cmd_monitorar)],

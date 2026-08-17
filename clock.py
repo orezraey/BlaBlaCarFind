@@ -27,15 +27,27 @@ _resolved = False
 
 
 def _system_timezone() -> tzinfo:
-    """Fuso do sistema, reavaliado a cada chamada.
+    """Fuso do sistema, preferindo a zona IANA.
 
-    `astimezone()` sem argumento devolve o deslocamento vigente agora, entao
-    resolver na hora do uso mantem o horario de verao correto.
+    `tzlocal` devolve algo como America/Sao_Paulo -- uma zona de verdade, que
+    conhece as regras de horario de verao e continua correta com o tempo. Ja
+    `astimezone()` entrega so o deslocamento vigente no instante da chamada,
+    congelado: serve para saber a data de hoje, mas erraria depois de uma virada
+    de horario de verao. Por isso ele fica apenas como reserva, e reavaliado a
+    cada uso para reduzir esse risco.
+
+    `tzlocal` e dependencia obrigatoria do APScheduler, que ja vem com o
+    python-telegram-bot; o fallback cobre instalacoes fora do padrao.
     """
-    tz = datetime.now().astimezone().tzinfo
-    if tz is None:  # praticamente inalcancavel; mantem o retorno sempre valido
-        raise RuntimeError("o sistema nao expos um fuso horario")
-    return tz
+    try:
+        import tzlocal
+
+        return tzlocal.get_localzone()
+    except Exception:  # pragma: no cover - depende do ambiente
+        tz = datetime.now().astimezone().tzinfo
+        if tz is None:  # praticamente inalcancavel; mantem o retorno sempre valido
+            raise RuntimeError("o sistema nao expos um fuso horario")
+        return tz
 
 
 def _resolve() -> tzinfo | None:
