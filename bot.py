@@ -21,7 +21,7 @@ from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import Forbidden
+from telegram.error import BadRequest, Conflict, Forbidden, InvalidToken, NetworkError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -499,6 +499,41 @@ async def poll_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await asyncio.sleep(DELAY_BETWEEN_WATCHES)
 
 
+async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Trata as falhas que chegam ao Application.
+
+    Sem um handler registrado, o python-telegram-bot despeja o traceback inteiro
+    a cada oscilacao de rede -- inclusive nas quedas de conexao do long polling,
+    que ele mesmo refaz sozinho, com espera progressiva e sem limite de
+    tentativas. O ruido escondia os erros que realmente pedem atencao.
+    """
+    error = ctx.error
+
+    # BadRequest herda de NetworkError no PTB, mas nao e instabilidade: indica
+    # requisicao malformada (HTML invalido, mensagem longa demais, chat errado).
+    # Sem essa excecao, um defeito nosso passaria por soluco de rede.
+    if isinstance(error, NetworkError) and not isinstance(error, BadRequest):
+        log.warning(
+            "conexão com o Telegram falhou (%s); reconectando automaticamente",
+            type(error).__name__,
+        )
+        return
+
+    if isinstance(error, Conflict):
+        log.error(
+            "outra instância do bot está usando o mesmo token. "
+            "Encerre a duplicada para o monitoramento voltar ao normal."
+        )
+        return
+
+    if isinstance(error, InvalidToken):
+        log.error("token do Telegram inválido; confira TELEGRAM_BOT_TOKEN no .env")
+        return
+
+    origem = "update do Telegram" if isinstance(update, Update) else type(update).__name__
+    log.error("erro não tratado ao processar %s", origem, exc_info=error)
+
+
 def main() -> None:
     token = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
     if not token:
@@ -548,6 +583,7 @@ def main() -> None:
     app.add_handler(CommandHandler("parar", cmd_parar))
     app.add_handler(CommandHandler("checar", cmd_checar))
     app.add_handler(CallbackQueryHandler(on_stop_button, pattern=r"^stop:\d+$"))
+    app.add_error_handler(on_error)
 
     app.job_queue.run_repeating(poll_job, interval=POLL_MINUTES * 60, first=30)
 

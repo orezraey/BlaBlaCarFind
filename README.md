@@ -174,6 +174,15 @@ ficou em branco.
 **O bot não responde no Telegram** — verifique se o processo continua em execução no
 terminal. O bot funciona por consulta ativa (polling) e precisa permanecer rodando.
 
+**`conexão com o Telegram falhou (NetworkError); reconectando automaticamente`** —
+oscilação de rede na conexão com a API do Telegram. O cliente refaz a conexão sozinho,
+com espera progressiva, e o monitoramento continua. Só merece atenção se as linhas se
+repetirem de forma contínua, o que indica problema de conectividade no servidor.
+
+**`outra instância do bot está usando o mesmo token`** — o Telegram permite apenas uma
+conexão de polling por token. Encerre a instância duplicada; a que restar volta a
+funcionar sozinha.
+
 **Nenhuma carona é encontrada** — nem toda rota tem caronas publicadas para a data
 escolhida. Confirme no site do BlaBlaCar; datas muito distantes costumam estar vazias.
 
