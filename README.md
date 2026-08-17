@@ -67,6 +67,16 @@ arquivo, o que permite usar systemd, Docker ou CI sem alterar nada no projeto.
 | `TELEGRAM_BOT_TOKEN` | — | **Obrigatória.** Token do bot |
 | `POLL_MINUTES` | `15` | Intervalo entre as checagens, em minutos |
 | `BLABLACARFIND_DB` | `blablacarfind.db` | Caminho do banco SQLite |
+| `TIMEZONE` | fuso do sistema | Fuso usado para determinar a data atual (nome IANA) |
+
+O bot detecta o fuso horário do sistema automaticamente e o exibe ao iniciar. Defina
+`TIMEZONE` apenas quando o servidor estiver em um fuso diferente do das viagens — um
+VPS configurado em UTC, por exemplo, consideraria as 21h de Brasília como o dia
+seguinte, adiantando as datas oferecidas no cadastro.
+
+```ini
+TIMEZONE=America/Sao_Paulo
+```
 
 ## Uso
 
@@ -146,6 +156,7 @@ listagem de resultados.
 | `bot.py` | Comandos do Telegram e ciclo de monitoramento |
 | `blablacar.py` | Cliente da API: busca, detalhe da carona e geocodificação |
 | `storage.py` | Banco SQLite com as rotas e as viagens já notificadas |
+| `clock.py` | Resolução do fuso horário e data de referência |
 | `API.md` | Documentação da API utilizada |
 
 O projeto roda como um processo único e não exige serviços externos além do Telegram.

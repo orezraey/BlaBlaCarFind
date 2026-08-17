@@ -32,6 +32,7 @@ from telegram.ext import (
     filters,
 )
 
+import clock
 import storage
 from blablacar import BlaBlaCar, BlaBlaCarError, Place, RideDetails, Trip
 
@@ -248,7 +249,7 @@ async def on_pick_dest(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     ctx.user_data["dest"] = place
     await query.edit_message_text(f"Destino: {place.name}")
 
-    today = date.today()
+    today = clock.today()
     days = [today + timedelta(days=i) for i in range(1, 8)]
     buttons = [
         [InlineKeyboardButton(fmt_date(d.isoformat()), callback_data=f"date:{d.isoformat()}")]
@@ -327,7 +328,7 @@ async def on_date_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not travel_date:
         await update.message.reply_text("Não entendi a data. Usa DD/MM/AAAA, por exemplo 22/08/2026.")
         return ASK_DATE
-    if date.fromisoformat(travel_date) < date.today():
+    if date.fromisoformat(travel_date) < clock.today():
         await update.message.reply_text("Essa data já passou. Escolhe uma data futura.")
         return ASK_DATE
     msg = await _create_watch(update.message.chat_id, ctx, travel_date)
@@ -537,6 +538,7 @@ def main() -> None:
 
     app.job_queue.run_repeating(poll_job, interval=POLL_MINUTES * 60, first=30)
 
+    log.info("fuso horário: %s", clock.label())
     log.info("bot no ar; ciclo a cada %d min", POLL_MINUTES)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

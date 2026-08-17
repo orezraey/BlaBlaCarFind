@@ -10,8 +10,10 @@ import os
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import date as _date
+from datetime import datetime, timezone as _utc_timezone
 from pathlib import Path
+
+import clock
 
 DEFAULT_DB = Path(__file__).with_name("blablacarfind.db")
 
@@ -41,14 +43,15 @@ CREATE TABLE IF NOT EXISTS watches (
     dest_lng        REAL NOT NULL,
     travel_date     TEXT NOT NULL,
     seats           INTEGER NOT NULL DEFAULT 1,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    -- ISO 8601 com deslocamento; o valor vem do Python, ver clock.timestamp().
+    created_at      TEXT NOT NULL,
     active          INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS seen_trips (
     watch_id   INTEGER NOT NULL REFERENCES watches(id) ON DELETE CASCADE,
     trip_key   TEXT NOT NULL,
-    first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+    first_seen TEXT NOT NULL,
     price      TEXT,
     PRIMARY KEY (watch_id, trip_key)
 );
@@ -80,6 +83,41 @@ class Watch:
         return f"{self.origin_name} -> {self.dest_name} em {day}/{month}"
 
 
+def _migrate_naive_timestamps(conn: sqlite3.Connection) -> int:
+    """Converte os timestamps gravados antes do fuso passar a ser explicito.
+
+    Ate entao o valor vinha de `datetime('now')` do SQLite, que grava UTC sem
+    deslocamento -- indistinguivel de um horario local. Reinterpreta como UTC e
+    regrava em ISO 8601 com fuso. Linhas ja convertidas tem 'T' e sao ignoradas,
+    o que torna a migracao repetivel sem efeito colateral.
+    """
+    tz = clock.timezone()
+    converted = 0
+    for table, column, keys in (
+        ("watches", "created_at", ("id",)),
+        ("seen_trips", "first_seen", ("watch_id", "trip_key")),
+    ):
+        key_list = ", ".join(keys)
+        rows = conn.execute(
+            f"SELECT {key_list}, {column} FROM {table} WHERE {column} NOT LIKE '%T%'"
+        ).fetchall()
+        for row in rows:
+            try:
+                naive = datetime.strptime(row[column], "%Y-%m-%d %H:%M:%S")
+            except (TypeError, ValueError):
+                continue  # formato inesperado: melhor preservar do que adivinhar
+            fixed = naive.replace(tzinfo=_utc_timezone.utc).astimezone(tz)
+            where = " AND ".join(f"{k} = ?" for k in keys)
+            conn.execute(
+                f"UPDATE {table} SET {column} = ? WHERE {where}",
+                (fixed.isoformat(timespec="seconds"), *(row[k] for k in keys)),
+            )
+            converted += 1
+    if converted:
+        conn.commit()
+    return converted
+
+
 def _connect() -> sqlite3.Connection:
     global _conn
     if _conn is None:
@@ -90,6 +128,7 @@ def _connect() -> sqlite3.Connection:
         _conn.execute("PRAGMA foreign_keys = ON")
         _conn.executescript(_SCHEMA)
         _conn.commit()
+        _migrate_naive_timestamps(_conn)
     return _conn
 
 
@@ -135,9 +174,10 @@ def add_watch(
             return int(existing["id"])
         cur = conn.execute(
             """INSERT INTO watches (chat_id, origin_name, origin_place_id, origin_lat, origin_lng,
-                                    dest_name, dest_place_id, dest_lat, dest_lng, travel_date, seats)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (chat_id, *origin, *dest, travel_date, seats),
+                                    dest_name, dest_place_id, dest_lat, dest_lng, travel_date,
+                                    seats, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (chat_id, *origin, *dest, travel_date, seats, clock.timestamp()),
         )
         conn.commit()
         return int(cur.lastrowid)
@@ -184,7 +224,7 @@ def stop_watch(watch_id: int, chat_id: int) -> bool:
 
 def expire_past_watches(today: str | None = None) -> list[Watch]:
     """Desativa rotas cuja data ja passou. Devolve as que foram encerradas."""
-    today = today or _date.today().isoformat()
+    today = today or clock.today().isoformat()
     with _lock:
         conn = _connect()
         rows = conn.execute(
@@ -210,11 +250,13 @@ def mark_seen(watch_id: int, entries: list[tuple[str, str]]) -> None:
     """Grava (trip_key, preco). Reaparecer depois nao gera nova notificacao."""
     if not entries:
         return
+    stamp = clock.timestamp()
     with _lock:
         conn = _connect()
         conn.executemany(
-            "INSERT OR IGNORE INTO seen_trips (watch_id, trip_key, price) VALUES (?,?,?)",
-            [(watch_id, key, price) for key, price in entries],
+            "INSERT OR IGNORE INTO seen_trips (watch_id, trip_key, price, first_seen)"
+            " VALUES (?,?,?,?)",
+            [(watch_id, key, price, stamp) for key, price in entries],
         )
         conn.commit()
 
