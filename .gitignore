@@ -1,0 +1,32 @@
+# Segredos -- o .env guarda o token do bot e nunca deve ser versionado.
+.env
+.env.*
+!.env.example
+
+# Banco de dados: contem chat_id dos usuarios e as rotas monitoradas (dado pessoal).
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Ferramentas e editores
+.claude/settings.local.json
+.vscode/
+.idea/
+*.swp
+
+# Sistema operacional
+Thumbs.db
+desktop.ini
+.DS_Store
