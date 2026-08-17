@@ -1,61 +1,93 @@
 # BlaBlaCarFind
 
-Bot de Telegram que monitora uma rota no BlaBlaCar Brasil e avisa quando aparece
-uma **carona nova**, já com os sinais de confiança do motorista — nota, taxa de
-cancelamento e SuperDriver.
+Bot de Telegram que monitora uma rota do BlaBlaCar e avisa assim que uma carona nova
+é publicada.
+
+Caronas boas somem rápido: quem procura uma viagem específica acaba abrindo o site
+várias vezes por dia para ver se alguém publicou algo. O bot faz essa checagem
+sozinho e manda a carona no Telegram assim que ela aparece — junto com os dados que
+ajudam a decidir se vale reservar, incluindo com que frequência aquele motorista
+cancela caronas.
+
+## Recursos
+
+- Monitora várias rotas ao mesmo tempo, cada uma com origem, destino e data próprios.
+- Notifica apenas caronas **novas**: as que já existiam quando a rota foi cadastrada
+  não geram alerta.
+- Mostra o histórico de cancelamento do motorista, a nota, o selo SuperDriver e se o
+  perfil é verificado.
+- Avisa quando a reserva depende de aprovação manual do motorista.
+- Encerra o monitoramento automaticamente quando a data da viagem passa.
+
+## Requisitos
+
+- Python 3.10 ou superior
+- Um bot do Telegram criado pelo [@BotFather](https://t.me/BotFather)
 
 ## Instalação
 
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/orezraey/BlaBlaCarFind.git
 ```
 
-Crie o bot com o [@BotFather](https://t.me/BotFather) e guarde o token. Depois copie o
-arquivo de exemplo:
+```bash
+cd BlaBlaCarFind && pip install -r requirements.txt
+```
+
+Crie o arquivo de configuração a partir do modelo:
 
 ```bash
 copy .env.example .env
 ```
 
-Abra o `.env` e preencha o token:
+Em Linux ou macOS, use `cp .env.example .env`.
+
+Abra o `.env` e informe o token recebido do @BotFather:
 
 ```ini
-TELEGRAM_BOT_TOKEN=123456789:AA...seu_token_aqui
+TELEGRAM_BOT_TOKEN=123456789:AA...
 ```
 
-E rode:
+Inicie o bot:
 
 ```bash
 python bot.py
 ```
 
-Sem token o bot para na hora com instruções, em vez de falhar de forma obscura.
+Ao iniciar, o terminal exibe `bot no ar; ciclo a cada 15 min`. A partir daí, basta
+enviar `/start` para o bot no Telegram.
 
-### Configuração
+## Configuração
 
-Tudo vem do `.env` — ou de variáveis de ambiente, que têm precedência sobre o arquivo
-(prático para systemd, Docker ou CI, onde o `.env` nem precisa existir).
+As opções são lidas do arquivo `.env`. Variáveis de ambiente têm precedência sobre o
+arquivo, o que permite usar systemd, Docker ou CI sem alterar nada no projeto.
 
-| Variável | Padrão | Para que serve |
+| Variável | Padrão | Descrição |
 |---|---|---|
-| `TELEGRAM_BOT_TOKEN` | — | **Obrigatória.** Token do @BotFather |
-| `POLL_MINUTES` | `15` | Intervalo entre as checagens |
-| `BLABLACARFIND_DB` | `blablacarfind.db` | Caminho do banco; útil para deixá-lo fora do repositório |
+| `TELEGRAM_BOT_TOKEN` | — | **Obrigatória.** Token do bot |
+| `POLL_MINUTES` | `15` | Intervalo entre as checagens, em minutos |
+| `BLABLACARFIND_DB` | `blablacarfind.db` | Caminho do banco SQLite |
 
-## Comandos
+## Uso
 
-| Comando | O que faz |
+| Comando | Descrição |
 |---|---|
-| `/monitorar` | Cadastra uma rota: origem → destino → data, escolhendo a cidade numa lista |
-| `/rotas` | Lista o que está sendo monitorado |
-| `/checar` | Força uma checagem agora, sem esperar o ciclo |
+| `/start` | Apresenta o bot e lista os comandos |
+| `/monitorar` | Cadastra uma rota |
+| `/rotas` | Lista as rotas monitoradas |
+| `/checar` | Consulta as rotas imediatamente |
 | `/parar [nº]` | Encerra o monitoramento de uma rota |
 
-Ao cadastrar, o bot faz um **baseline**: as caronas que já existem são marcadas como
-vistas e não geram notificação. Só o que aparecer depois é avisado. Quando a data da
-viagem passa, a rota é encerrada automaticamente.
+O comando `/monitorar` conduz o cadastro em três etapas: cidade de origem, cidade de
+destino e data. Nas duas primeiras, o bot apresenta uma lista de lugares para escolha,
+evitando ambiguidade entre cidades de nome parecido. A data pode ser escolhida entre
+os próximos sete dias ou digitada no formato `DD/MM/AAAA`.
 
-## Como a notificação fica
+Ao concluir o cadastro, o bot registra as caronas já publicadas e informa quantas
+encontrou. Essas não geram notificação — o objetivo é avisar apenas sobre o que
+aparecer a partir daquele momento.
+
+## Exemplo de notificação
 
 ```
 🚗 Nova carona encontrada
@@ -75,59 +107,77 @@ Campinas - SP → São Paulo, SP · qui 20/ago
                                     [Ver no BlaBlaCar]
 ```
 
-Selos de cancelamento: 🟢 `NEVER`/`RARELY` · 🟡 `SOMETIMES` · 🔴 `OFTEN`/`ALWAYS` ·
-⚪ sem histórico. Motorista sem histórico **não** vira verde — é uma categoria própria.
+O indicador de cancelamento reflete o histórico do motorista no BlaBlaCar:
 
-Nada é filtrado: todas as caronas novas são notificadas, com o risco visível. Filtrar
-poderia esconder a única carona do dia.
-
-## Arquitetura
-
-| Arquivo | Papel |
+| Indicador | Significado |
 |---|---|
-| [blablacar.py](blablacar.py) | Cliente HTTP da API interna: busca, detalhe da carona, geocoding |
-| [storage.py](storage.py) | SQLite: rotas monitoradas e chaves das viagens já vistas |
-| [bot.py](bot.py) | Handlers do Telegram e o ciclo de vigilância |
-| [API.md](API.md) | Contrato da API interna levantado por engenharia reversa |
+| 🟢 | Nunca ou raramente cancela |
+| 🟡 | Cancela caronas às vezes |
+| 🔴 | Cancela com frequência |
+| ⚪ | Ainda não possui histórico |
 
-Um único processo. O banco (`blablacarfind.db`) é criado ao lado do código.
+Todas as caronas novas são notificadas, sem filtro. O indicador serve para informar a
+decisão, não para esconder opções.
 
-### Dois pontos que não são óbvios
+## Escolhendo o intervalo de checagem
 
-**Deduplicação não pode usar o ID da viagem.** O `multimodal_id.id` é um blob cifrado
-que **muda a cada sessão** — dois processos consultando a mesma carona recebem ids
-diferentes. Usar isso como chave faria o bot notificar a rota inteira a cada reinício.
-Por isso `Trip.natural_key` é um hash de horário + locais + motorista + duração, que
-se manteve idêntico entre sessões nos testes. O preço fica fora de propósito: promoção
-não transforma a carona em viagem nova.
+O volume de consultas depende de quantas caronas a rota tem, já que os resultados são
+paginados de dez em dez.
 
-**A marcação de "visto" acontece depois do envio.** Se o Telegram falhar, a carona é
-tentada de novo no ciclo seguinte em vez de sumir silenciosamente.
-
-## Custo de tráfego
-
-Cada checagem faz 1 request por página de resultado (10 caronas por página), mais
-1 request por carona nova (o detalhe do motorista só existe lá).
-
-| Rota | Caronas | Requests/checagem | Por dia a cada 15 min |
+| Rota | Caronas | Consultas por checagem | Por dia, a cada 15 min |
 |---|---|---|---|
-| São Paulo → Rio | ~3 | 1 | ~96 |
+| São Paulo → Rio de Janeiro | ~3 | 1 | ~96 |
 | São Paulo → Belo Horizonte | ~5 | 1 | ~96 |
 | Campinas → São Paulo | ~103 | ~11 | ~1.056 |
 
-Rotas de commuter (Campinas→SP) são bem mais caras que rotas intermunicipais longas.
-Se for monitorar várias rotas movimentadas, considere subir `POLL_MINUTES`.
+Rotas metropolitanas concentram muito mais caronas do que trechos intermunicipais
+longos. Para monitorar várias rotas desse tipo, um valor maior de `POLL_MINUTES`
+reduz o volume proporcionalmente.
 
-Latência medida: ~0,7 s por request. As chamadas são serializadas por um lock e há
-2 s de pausa entre rotas, para o tráfego não sair em rajada.
+## Como funciona
+
+O bot consulta a API que o site do BlaBlaCar utiliza e compara o resultado com o que
+já foi visto naquela rota, notificando a diferença. Para cada carona nova, faz uma
+segunda consulta que traz os dados do motorista — eles não estão disponíveis na
+listagem de resultados.
+
+| Arquivo | Responsabilidade |
+|---|---|
+| `bot.py` | Comandos do Telegram e ciclo de monitoramento |
+| `blablacar.py` | Cliente da API: busca, detalhe da carona e geocodificação |
+| `storage.py` | Banco SQLite com as rotas e as viagens já notificadas |
+| `API.md` | Documentação da API utilizada |
+
+O projeto roda como um processo único e não exige serviços externos além do Telegram.
+
+## Solução de problemas
+
+**`A sintaxe do nome do arquivo... está incorreta`** — a sintaxe `$env:VARIAVEL` é do
+PowerShell e não funciona no Prompt de Comando. Com a configuração pelo `.env` isso
+deixa de ser necessário: basta executar `python bot.py`.
+
+**`TELEGRAM_BOT_TOKEN não definido`** — o arquivo `.env` não existe ou está sem o
+token. Confirme que ele está na mesma pasta de `bot.py` e que a linha do token não
+ficou em branco.
+
+**O bot não responde no Telegram** — verifique se o processo continua em execução no
+terminal. O bot funciona por consulta ativa (polling) e precisa permanecer rodando.
+
+**Nenhuma carona é encontrada** — nem toda rota tem caronas publicadas para a data
+escolhida. Confirme no site do BlaBlaCar; datas muito distantes costumam estar vazias.
 
 ## Limitações
 
-- **API interna, não documentada.** Pode mudar sem aviso. Se a busca começar a falhar,
-  compare com o [API.md](API.md) — provavelmente mudou nome de campo ou de parâmetro.
-- **Depende de impersonação TLS.** O `curl_cffi` com `impersonate="chrome"` é o que
-  passa pelo DataDome. Vale fixar a versão do pacote.
-- **Só caronas.** Ônibus não tem motorista nem taxa de cancelamento; o cliente suporta
-  (`supply="ALL"`), mas o bot monitora apenas `CARPOOLING`.
-- **Raspagem provavelmente contraria os Termos de Uso do BlaBlaCar.** Vale conferir
-  antes de expor isso para outras pessoas ou aumentar o volume.
+- Monitora apenas caronas entre particulares. Passagens de ônibus vendidas pela
+  plataforma não são acompanhadas, por não terem motorista nem histórico de
+  cancelamento.
+- Depende da API interna do BlaBlaCar, que não é pública nem versionada e pode mudar
+  sem aviso.
+- O acesso exige emulação da assinatura TLS do Chrome, feita pela biblioteca
+  `curl_cffi`.
+
+## Aviso
+
+Projeto sem qualquer vínculo com o BlaBlaCar, desenvolvido para uso pessoal e fins
+educacionais. Utiliza uma API interna, não oficial e sem suporte. O uso é de
+responsabilidade de quem executa o projeto.
