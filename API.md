@@ -54,6 +54,40 @@ Parâmetros (query achatada, notação de bracket para o mapa `f`):
 | `f[sort]` | — | `dep_time:asc`, `price:asc`, `duration:asc`, `dep_dist:asc`, `arr_dist:asc` |
 | `f[carrier_*]` | — | filtro por empresa, ex. `f[carrier_luxor]=true` |
 
+### ⚠️ O resultado depende do `x-visitor-id`
+
+O mesmo request, no mesmo instante, devolve listas **de tamanhos diferentes** conforme o
+`x-visitor-id`. Cada identidade cai numa cópia do índice, e as cópias têm graus de
+atualização diferentes. Medido em 19/08/2026, Balneário Camboriú → Blumenau, 21/08:
+
+| Amostra | Resultado |
+|---|---|
+| 6 requests, mesmo `x-visitor-id` | 15, 15, 15, 15, 15, 15 |
+| 6 requests, só trocando o `x-visitor-id` | 17, 15, 17, **34**, 15, **34** |
+| 20 requests, `x-visitor-id` novo em cada | 10× 15, 7× 17, 3× 34 |
+| 1 `x-visitor-id` fixo, 33 amostras em 17 min | 15 nas 33 |
+
+Propriedades verificadas:
+
+- **Determinístico por identidade**: o mesmo `x-visitor-id` cai sempre na mesma cópia —
+  por pelo menos 17 minutos seguidos, enquanto outras identidades viam 17 e 34.
+- **Aninhado**: o conjunto menor está contido no maior. A união de 10 tentativas nunca
+  passou do maior conjunto isolado.
+- **As caronas "a mais" são reais**: mesma rota e mesma data (conferido no `gtm` de cada
+  item), todas respondendo no `/ride/v3` com motorista, nota e taxa de cancelamento.
+- **Não é raio de busca**: a distância média do ponto de partida é a mesma nos dois
+  conjuntos (2,2 km nas compartilhadas, 1,9 km nas exclusivas do conjunto maior).
+- A contagem declarada (`tabs[].count`, `summary_header.number_of_results` e
+  `tracking...braze.NumberOfResults`) acompanha a cópia que respondeu — serve como
+  medida de quão completa ela é, sem precisar paginar.
+
+Consequência prática: **um cliente que fixa o `x-visitor-id` fica preso a uma cópia** e
+pode não enxergar metade do inventário por horas. Por isso `blablacar.py` sorteia uma
+identidade nova a cada tentativa e junta os resultados (ver `SEARCH_ATTEMPTS`).
+
+O header é obrigatório: sem ele, ou vazio, a API responde
+`400 constraint_not_blank / X-Visitor-Id`.
+
 ### Resposta
 
 ```
