@@ -66,8 +66,16 @@ arquivo, o que permite usar systemd, Docker ou CI sem alterar nada no projeto.
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | — | **Obrigatória.** Token do bot |
 | `POLL_MINUTES` | `15` | Intervalo entre as checagens, em minutos |
+| `SEARCH_ATTEMPTS` | `4` | Consultas por checagem, para não perder caronas |
 | `BLABLACARFIND_DB` | `blablacarfind.db` | Caminho do banco SQLite |
 | `TIMEZONE` | fuso do sistema | Fuso usado para determinar a data atual (nome IANA) |
+
+`SEARCH_ATTEMPTS` existe por um detalhe da API do BlaBlaCar: a lista devolvida depende
+da identidade anônima usada na consulta, e parte das identidades recebe um resultado
+incompleto — na mesma rota e no mesmo minuto, 15 caronas em vez das 34 que existem. O
+bot consulta com algumas identidades, junta o que vier e passa a usar a que trouxe mais
+resultados. Reduzir para `1` traz de volta o problema; aumentar tem retorno pequeno e
+custa uma consulta a mais por checagem.
 
 O bot detecta o fuso horário do sistema automaticamente e o exibe ao iniciar. Defina
 `TIMEZONE` apenas quando o servidor estiver em um fuso diferente do das viagens — um
@@ -132,13 +140,14 @@ decisão, não para esconder opções.
 ## Escolhendo o intervalo de checagem
 
 O volume de consultas depende de quantas caronas a rota tem, já que os resultados são
-paginados de dez em dez.
+paginados de dez em dez, mais uma consulta por identidade extra sondada
+(`SEARCH_ATTEMPTS`, três a mais no padrão).
 
 | Rota | Caronas | Consultas por checagem | Por dia, a cada 15 min |
 |---|---|---|---|
-| São Paulo → Rio de Janeiro | ~3 | 1 | ~96 |
-| São Paulo → Belo Horizonte | ~5 | 1 | ~96 |
-| Campinas → São Paulo | ~103 | ~11 | ~1.056 |
+| São Paulo → Rio de Janeiro | ~3 | ~4 | ~384 |
+| São Paulo → Belo Horizonte | ~5 | ~4 | ~384 |
+| Campinas → São Paulo | ~103 | ~14 | ~1.344 |
 
 Rotas metropolitanas concentram muito mais caronas do que trechos intermunicipais
 longos. Para monitorar várias rotas desse tipo, um valor maior de `POLL_MINUTES`

@@ -35,6 +35,7 @@ from telegram.ext import (
 
 import clock
 import storage
+from blablacar import SEARCH_ATTEMPTS as DEFAULT_SEARCH_ATTEMPTS
 from blablacar import BlaBlaCar, BlaBlaCarError, Place, RideDetails, Trip
 
 logging.basicConfig(
@@ -72,6 +73,10 @@ def env_int(name: str, default: int) -> int:
 
 
 POLL_MINUTES = env_int("POLL_MINUTES", 15)
+# Consultas por busca, cada uma com uma identidade de visitante diferente. Com
+# uma so, o bot corre o risco de passar o dia inteiro lendo uma copia incompleta
+# do inventario do BlaBlaCar -- ver SEARCH_ATTEMPTS em blablacar.py.
+SEARCH_ATTEMPTS = env_int("SEARCH_ATTEMPTS", DEFAULT_SEARCH_ATTEMPTS)
 # Pausa entre rotas dentro de um ciclo, para nao disparar rajadas contra a API.
 DELAY_BETWEEN_WATCHES = 2.0
 
@@ -165,7 +170,8 @@ def watch_to_places(watch: storage.Watch) -> tuple[Place, Place]:
 def search_watch(watch: storage.Watch) -> list[Trip]:
     origin, dest = watch_to_places(watch)
     return _client.search(
-        origin, dest, watch.travel_date, seats=watch.seats, supply="CARPOOLING"
+        origin, dest, watch.travel_date, seats=watch.seats, supply="CARPOOLING",
+        attempts=SEARCH_ATTEMPTS,
     )
 
 

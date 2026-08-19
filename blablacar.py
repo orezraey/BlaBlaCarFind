@@ -23,6 +23,7 @@ from typing import Any, Iterator
 from urllib.parse import quote
 
 from curl_cffi import requests
+from curl_cffi.requests.exceptions import RequestException
 
 APP = "https://www.blablacar.com.br"
 EDGE = "https://edge.blablacar.com.br"
@@ -35,9 +36,39 @@ _TOKEN_PAGE = (
 
 _TOKEN_TTL = 20 * 60  # o token nao declara expiracao; renovamos por seguranca
 
+# Quantas identidades de visitante sondar por busca.
+#
+# A API serve a lista conforme o `x-visitor-id`: cada identidade cai numa copia
+# do indice, e ha copias incompletas. Medido em 19/08/2026, mesma rota e mesmo
+# minuto, 20 identidades novas: 10x devolveram 15 caronas, 7x devolveram 17 e 3x
+# devolveram 34 -- sempre com o conjunto menor contido no maior, e as caronas
+# "extras" confirmadas uma a uma no /ride/v3. Nao e raio de busca: as que faltam
+# partem do mesmo lugar que as demais.
+#
+# A escolha e por identidade, nao por consulta: a mesma identidade cai sempre na
+# mesma copia (33 amostras em 17 min, todas iguais) e vale para qualquer rota e
+# data -- a que via 34 numa rota via 41 na rota inversa e 30 em outra data,
+# contra 21 e 8 das sorteadas no mesmo instante. Ou seja: fixar o visitor-id de
+# saida, como o cliente fazia, deixa o processo cego a metade do inventario ate
+# reiniciar.
+#
+# Dai a estrategia: sondar algumas identidades por busca, ficar com a que
+# declarou mais viagens e reusa-la nas proximas (ver `search`).
+SEARCH_ATTEMPTS = 4
+
 
 class BlaBlaCarError(RuntimeError):
     pass
+
+
+def _net_reason(exc: Exception) -> str:
+    """Resume uma falha de transporte em uma linha.
+
+    O curl_cffi anexa "See https://curl.se/..." a toda mensagem: util uma vez,
+    ruido em cada linha de log.
+    """
+    reason = str(exc).split(". See https://curl.se")[0]
+    return f"{type(exc).__name__}: {reason}"
 
 
 def _strip_js_undefined(text: str) -> str:
@@ -191,6 +222,8 @@ class BlaBlaCar:
         self.currency = currency
         # impersonate="chrome" e o que faz o DataDome liberar; sem isso -> 403.
         self._s = requests.Session(impersonate="chrome")
+        # Ponto de partida: `search` sonda alternativas e fica com a identidade
+        # que alcanca a copia mais completa do indice (ver SEARCH_ATTEMPTS).
         self._visitor_id = str(uuid.uuid4())
         self._token: str | None = None
         self._token_at = 0.0
@@ -205,7 +238,7 @@ class BlaBlaCar:
         return self._token
 
     def _refresh_token(self) -> None:
-        r = self._s.get(_TOKEN_PAGE, timeout=45)
+        r = self._fetch(_TOKEN_PAGE, "pagina de token")
         if r.status_code != 200:
             raise BlaBlaCarError(f"pagina de token retornou HTTP {r.status_code}")
         auth = _window_object(r.text, "__INFRASTRUCTURE__authentication")
@@ -229,9 +262,22 @@ class BlaBlaCar:
             "referer": APP + "/",
         }
 
+    def _fetch(self, url: str, what: str, **kwargs: Any) -> requests.Response:
+        """GET que traduz falha de transporte em BlaBlaCarError.
+
+        DNS, conexao recusada e timeout sao oscilacao de rede, nao defeito
+        nosso. Como BlaBlaCarError caem no tratamento que todo chamador ja
+        tem -- avisar e tentar no proximo ciclo -- em vez de subir como
+        excecao inesperada e despejar um traceback a cada soluco da rede.
+        """
+        try:
+            return self._s.get(url, timeout=45, **kwargs)
+        except RequestException as exc:
+            raise BlaBlaCarError(f"{what}: {_net_reason(exc)}") from exc
+
     def _get(self, path: str, params: dict[str, Any]) -> Any:
         for attempt in (1, 2):
-            r = self._s.get(EDGE + path, params=params, headers=self._headers(), timeout=45)
+            r = self._fetch(EDGE + path, path, params=params, headers=self._headers())
             if r.status_code == 401 and attempt == 1:
                 self._token = None  # token expirou: renova e tenta de novo
                 continue
@@ -320,18 +366,76 @@ class BlaBlaCar:
             params["partner_id"] = mm["pro_partner_id"]
         return _parse_ride(self._get("/ride/v3", params))
 
-    def search(self, *args: Any, **kwargs: Any) -> list[Trip]:
-        """Busca completa (todas as paginas), normalizada e deduplicada."""
-        trips: list[Trip] = []
-        seen: set[str] = set()
-        for page in self.search_raw(*args, **kwargs):
-            items = page.get("results_content", {}).get("results", {}).get("search_items", [])
-            for item in items:
-                trip = _normalize(item)
-                if trip and trip.trip_id not in seen:
-                    seen.add(trip.trip_id)
-                    trips.append(trip)
-        return trips
+    def search(
+        self,
+        origin: str | Place,
+        destination: str | Place,
+        date: str,
+        seats: int = 1,
+        supply: str = "ALL",
+        filters: dict[str, str] | None = None,
+        max_pages: int = 20,
+        attempts: int = SEARCH_ATTEMPTS,
+    ) -> list[Trip]:
+        """Busca completa (todas as paginas), normalizada e deduplicada.
+
+        Sonda `attempts` identidades de visitante -- a atual primeiro, as demais
+        sorteadas -- junta tudo que vier e adota a que declarou mais viagens, que
+        fica valendo para as proximas buscas (ver SEARCH_ATTEMPTS). Sem isso o
+        cliente pode passar o processo inteiro enxergando so parte do inventario.
+
+        A deduplicacao e por `natural_key`, e nao por `trip_id`: o mesmo assento
+        recebe ids diferentes a cada identidade, entao trip_id duplicaria tudo.
+        """
+        # Resolve o lugar uma vez so -- senao cada tentativa pagaria o geocode.
+        src = origin if isinstance(origin, Place) else self.geocode(origin)
+        dst = destination if isinstance(destination, Place) else self.geocode(destination)
+
+        found: dict[str, Trip] = {}
+        best, best_visitor = -1, self._visitor_id
+        candidates = [self._visitor_id]
+        candidates += [str(uuid.uuid4()) for _ in range(max(1, attempts) - 1)]
+
+        for visitor in candidates:
+            self._visitor_id = visitor
+            declared: int | None = None
+            for page in self.search_raw(
+                src, dst, date, seats=seats, supply=supply,
+                filters=filters, max_pages=max_pages,
+            ):
+                items = page.get("results_content", {}).get("results", {}).get("search_items", [])
+                for item in items:
+                    trip = _normalize(item)
+                    if trip:
+                        found.setdefault(trip.natural_key, trip)
+                if declared is None:
+                    declared = _declared_count(page, supply)
+                    if declared is not None and declared <= best:
+                        # Copia igual ou pior que a melhor ja vista, e os
+                        # conjuntos sao aninhados: paginar o resto so gastaria
+                        # request. A 1a pagina, que ja veio, entra na uniao.
+                        break
+            if declared is not None and declared > best:
+                best, best_visitor = declared, visitor
+
+        # Empate mantem a identidade em uso: trocar por trocar so perderia a
+        # unica informacao que temos sobre qual copia ela alcanca.
+        self._visitor_id = best_visitor
+        return list(found.values())
+
+
+def _declared_count(page: dict, supply: str) -> int | None:
+    """Quantas viagens esta copia do resultado declara ter, para o supply pedido.
+
+    Mede o quanto a copia que respondeu esta completa, sem precisar paginar: como
+    os conjuntos sao aninhados, contagem maior = copia melhor. `None` quando a
+    resposta nao traz a aba (a busca continua, so sem o atalho).
+    """
+    for tab in page.get("tabs") or []:
+        if tab.get("supply") == supply:
+            count = tab.get("count")
+            return count if isinstance(count, int) else None
+    return None
 
 
 def _dig(obj: Any, *path: str) -> Any:
