@@ -9,6 +9,9 @@
 *.db-wal
 *.db-shm
 
+# Copia local do pacote de certificados (ver _ascii_cacert em blablacar.py).
+cacert.pem
+
 # Python
 __pycache__/
 *.py[cod]
@@ -30,3 +33,4 @@ env/
 Thumbs.db
 desktop.ini
 .DS_Store
+logs/blablacarfind.err.log

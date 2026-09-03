@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -24,6 +26,13 @@ from urllib.parse import quote
 
 from curl_cffi import requests
 from curl_cffi.requests.exceptions import RequestException
+
+try:
+    from curl_cffi.curl import DEFAULT_CACERT
+except ImportError:  # curl_cffi antigo: o padrao dele ja era o certifi
+    import certifi
+
+    DEFAULT_CACERT = certifi.where()
 
 APP = "https://www.blablacar.com.br"
 EDGE = "https://edge.blablacar.com.br"
@@ -55,6 +64,54 @@ _TOKEN_TTL = 20 * 60  # o token nao declara expiracao; renovamos por seguranca
 # Dai a estrategia: sondar algumas identidades por busca, ficar com a que
 # declarou mais viagens e reusa-la nas proximas (ver `search`).
 SEARCH_ATTEMPTS = 4
+
+
+def _ascii_cacert() -> str:
+    """Caminho sem acento para o pacote de certificados que o curl vai usar.
+
+    O curl_cffi aponta o libcurl para o cacert.pem do certifi, que mora dentro
+    do site-packages -- ou seja, dentro do perfil do usuario. Quando o nome do
+    perfil tem acento (C:\\Users\\Cau\u00e3) e o bot roda como servico do Windows
+    na conta LocalSystem, o libcurl nao consegue carregar esse arquivo e derruba
+    toda requisicao com `curl: (77) error setting certificate verify locations`,
+    ainda no GET da pagina de token. Na sessao interativa do mesmo usuario o
+    mesmo caminho abre normalmente, entao o gatilho e a combinacao conta de
+    servico + caminho com acento, nao o acento sozinho.
+
+    A saida e copiar o bundle para um caminho so-ASCII e mandar o curl ler de
+    la. Onde o problema nao existe isso nao custa nada: caminho ja ASCII (Linux,
+    macOS, Windows com perfil sem acento) devolve o padrao sem tocar em disco.
+    """
+    if DEFAULT_CACERT.isascii():
+        return DEFAULT_CACERT
+
+    # Ao lado do codigo, mesma convencao do banco. Se nem isso for ASCII nao ha
+    # destino seguro a oferecer -- devolve o padrao e deixa o erro aparecer.
+    dest_dir = os.path.dirname(os.path.abspath(__file__))
+    if not dest_dir.isascii():
+        return DEFAULT_CACERT
+
+    dest = os.path.join(dest_dir, "cacert.pem")
+    try:
+        src = os.stat(DEFAULT_CACERT)
+        try:
+            cached = os.stat(dest)
+            fresh = (cached.st_size, cached.st_mtime_ns) == (src.st_size, src.st_mtime_ns)
+        except FileNotFoundError:
+            fresh = False
+        if not fresh:
+            # copy2 preserva o mtime (e ele que data a copia); os.replace e
+            # atomico, entao dois processos subindo juntos nunca deixam um
+            # bundle truncado para tras.
+            tmp = f"{dest}.{os.getpid()}.tmp"
+            shutil.copy2(DEFAULT_CACERT, tmp)
+            os.replace(tmp, dest)
+    except OSError:
+        return DEFAULT_CACERT
+    return dest
+
+
+_CACERT = _ascii_cacert()
 
 
 class BlaBlaCarError(RuntimeError):
@@ -221,7 +278,7 @@ class BlaBlaCar:
         self.locale = locale
         self.currency = currency
         # impersonate="chrome" e o que faz o DataDome liberar; sem isso -> 403.
-        self._s = requests.Session(impersonate="chrome")
+        self._s = requests.Session(impersonate="chrome", verify=_CACERT)
         # Ponto de partida: `search` sonda alternativas e fica com a identidade
         # que alcanca a copia mais completa do indice (ver SEARCH_ATTEMPTS).
         self._visitor_id = str(uuid.uuid4())
